@@ -5,10 +5,10 @@ from pathlib import Path
 from fastapi import FastAPI
 from importlib import import_module
 from langchain.prompts import PromptTemplate
-from langchain_community.llms import ollama
+# from langchain_community.llms import Ollama
 from langchain.output_parsers import StructuredOutputParser, ResponseSchema
 from langchain_core.runnables import RunnableSequence
-
+from langchain_ollama import OllamaLLM
 # Configuration
 OLLAMA_MODEL = "mistral"
 TEST_OUTPUT_DIR = "tests"
@@ -29,7 +29,7 @@ def get_endpoint_details(app: FastAPI):
     """Extract the endpoint details from the FastAPI app"""
     endpoints =[]
     for route in app.routes:
-        if hasattr(route, "methods") and hasattr(route, "path"):
+        if hasattr(route, "methods") and hasattr(route, "path") :
             endpoints.append({
                 "path": route.path,
                 "method": route.methods,
@@ -45,13 +45,13 @@ def create_prompt_template():
         ResponseSchema(name="test_code", description="Generated pytest test case code ", type="string")
     ]    
     output_parser = StructuredOutputParser.from_response_schemas(response_schemas)
-
+    format_instructions = output_parser.get_format_instructions()
     prompt_template = PromptTemplate(
-        input_variables=["path","methods","name","response_model","body_field"],
+        input_variables=["path","method","name","response_model","body_field"],
         template="""
         Generate a pytest unit test case for a FastAPI endpoint with the following details:
         - Path: {path}
-        - Methods: {methods}
+        - Method: {method}
         - Name: {name}
         - Response Model: {response_model}
         - Request Body (optional if present): {body_field}
@@ -68,7 +68,7 @@ def create_prompt_template():
         - The code should look like it is written by a principal software engineer with 20 years of experience
 
         Return the response in the follwing format:
-        {output_parser.get_format_instructions()}  
+        {{output_parser.get_format_instructions()}}  
 
         Example test case:
         ```python 
@@ -80,7 +80,7 @@ def create_prompt_template():
             assert response.json() == {{expected_response}}
         ```  
         """,
-        partial_variables={"output_parser": output_parser}
+        partial_variables={"output_parser.get_format_instructions()": format_instructions}
     )
     return prompt_template, output_parser
 
@@ -90,7 +90,7 @@ def generated_test_case(endpoint: dict, llm,prompt_template :PromptTemplate,outp
     try:
         result = chain.invoke({
             "path":endpoint["path"],
-            "methods":",".join(endpoint["methods"]),
+            "method":",".join(endpoint["method"]),
             "name": endpoint["name"],
             "response_model": endpoint["response_model"],
             "body_field": endpoint["body_field"]
@@ -102,13 +102,12 @@ def generated_test_case(endpoint: dict, llm,prompt_template :PromptTemplate,outp
 
 def generate_test(app_path: str,app_name:str,out_dir: str= TEST_OUTPUT_DIR):
     """Generate UTs for endpoints in the fastAPI"""
-    llm = ollama(model=OLLAMA_MODEL)
+    llm = OllamaLLM(model="mistral")
     prompt_template, out_parser = create_prompt_template()
     Path(out_dir).mkdir(exist_ok=True)
     output_file = Path(out_dir) / TEST_FILE_NAME
     app = get_fastapi_app(app_path,app_name)
     endpoints = get_endpoint_details(app)
-
     with open(output_file, "w") as f:
         f.write("from fastapi.testclient import TestClient\n")
         f.write("import pytest\n")
@@ -132,5 +131,6 @@ def main():
 
     generate_test(args.app_path, args.app_name, args.output_dir)
 
-    if name == "main":
-        main()        
+
+if __name__ == "__main__":
+    main()      
