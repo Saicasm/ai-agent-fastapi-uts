@@ -1,5 +1,6 @@
 import ast
 import argparse
+from os import name
 from pathlib import Path
 from fastapi import FastAPI
 from importlib import import_module
@@ -41,7 +42,7 @@ def get_endpoint_details(app: FastAPI):
 def create_prompt_template():
     """ Create a Langachain prompt template for test case generation"""    
     response_schemas = [
-        ResponseSchema(name="test_code", description="generated pytest test case code ", type="string")
+        ResponseSchema(name="test_code", description="Generated pytest test case code ", type="string")
     ]    
     output_parser = StructuredOutputParser.from_response_schemas(response_schemas)
 
@@ -77,7 +78,59 @@ def create_prompt_template():
             response = await async_client.get("/path")
             assert response.status_code == 200
             assert response.json() == {{expected_response}}
-
         ```  
-        """
+        """,
+        partial_variables={"output_parser": output_parser}
     )
+    return prompt_template, output_parser
+
+def generated_test_case(endpoint: dict, llm,prompt_template :PromptTemplate,output_parser:StructuredOutputParser ):
+    """Generate testcase using Langchain and Local LLM"""
+    chain = RunnableSequence(prompt_template | llm | output_parser)
+    try:
+        result = chain.invoke({
+            "path":endpoint["path"],
+            "methods":",".join(endpoint["methods"]),
+            "name": endpoint["name"],
+            "response_model": endpoint["response_model"],
+            "body_field": endpoint["body_field"]
+        })
+        return result.get("test_code",f"# Error: No test code generated for {endpoint['path']}")
+    except Exception as e:
+        return f"# Error generating test case for {endpoint['path']}: {str(e)}"
+
+
+def generate_test(app_path: str,app_name:str,out_dir: str= TEST_OUTPUT_DIR):
+    """Generate UTs for endpoints in the fastAPI"""
+    llm = ollama(model=OLLAMA_MODEL)
+    prompt_template, out_parser = create_prompt_template()
+    Path(out_dir).mkdir(exist_ok=True)
+    output_file = Path(out_dir) / TEST_FILE_NAME
+    app = get_fastapi_app(app_path,app_name)
+    endpoints = get_endpoint_details(app)
+
+    with open(output_file, "w") as f:
+        f.write("from fastapi.testclient import TestClient\n")
+        f.write("import pytest\n")
+        f.write("import httpx\n\n")
+        f.write(f"from {app_path.replace('/', '.').rstrip('.py')} import {app_name}\n\n")
+        f.write("client = TestClient(app)\n\n")
+
+        for endpoint in endpoints:
+            test_code = generated_test_case(endpoint, llm, prompt_template, out_parser)
+            f.write(test_code + "\n\n")
+
+        print(f"Tests written to {output_file}")
+
+def main():
+    """Main function to run the agent."""
+    parser = argparse.ArgumentParser(description="Generate unit tests for FastAPI endpoints using LangChain")
+    parser.add_argument("--app-path", default="main", help="Path to FastAPI app module (e.g., 'app/main')")
+    parser.add_argument("--app-name", default="app", help="Name of the FastAPI app instance")
+    parser.add_argument("--output-dir", default=TEST_OUTPUT_DIR, help="Output directory for test files")
+    args = parser.parse_args()
+
+    generate_test(args.app_path, args.app_name, args.output_dir)
+
+    if name == "main":
+        main()        
